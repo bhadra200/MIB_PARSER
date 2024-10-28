@@ -1,4 +1,6 @@
 import logging
+import mysql.connector
+from mysql.connector import Error
 from pysnmp.smi import builder, view
 from pysmi.reader.localfile import FileReader
 from pysmi.writer.pyfile import PyFileWriter
@@ -9,18 +11,18 @@ from pysmi.codegen.pysnmp import PySnmpCodeGen
 # Configure logging for DEBUG level
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# initialize the directory
+# Initialize the directory for MIB files
 mib_directory = './mibs'
 
 # Create MIB builder
 mibBuilder = builder.MibBuilder()
 mibBuilder.set_mib_sources(
     builder.DirMibSource('myenv/lib/python3.12/site-packages/pysnmp/smi/mibs'),  # Default location first
-    builder.DirMibSource('mibs')
+    builder.DirMibSource(mib_directory)
 )
 mibBuilder.loadTexts = True
 
-#Initialize MIB compiler for compilation
+# Initialize MIB compiler for compilation
 mibCompiler = MibCompiler(
     SmiV2Parser(),
     PySnmpCodeGen(),
@@ -30,12 +32,10 @@ mibCompiler = MibCompiler(
 # Add file reader for MIB files and enable debug logging for compiler actions
 mibCompiler.add_sources(FileReader(mib_directory))
 
-
-# Compile the IF-MIB file without forcing rebuild
+# Compile the IF-MIB file
 try:
     compiled_modules = mibCompiler.compile('IF-MIB', rebuild=False)
     logging.info(f"Compiled modules: {compiled_modules}")
-
 except Exception as e:
     logging.error(f"Error compiling MIB file: {e}")
 
@@ -44,41 +44,76 @@ mibBuilder.load_modules("IF-MIB")
 # Create MIB view controller
 mibViewController = view.MibViewController(mibBuilder)
 
-# Get and log all MIB symbols for IF-MIB
+# MySQL connection details
+def create_connection(host_name, user_name, user_password, db_name):
+    connection = None
+    try:
+        connection = mysql.connector.connect(
+            host=host_name,
+            user=user_name,
+            password=user_password,
+            database=db_name
+        )
+        print("Connection to MySQL DB successful")
+    except Error as e:
+        print(f"The error '{e}' occurred")
+    return connection
+
+# Create a table if it does not exist
+def create_table(connection):
+    create_table_query = """
+    CREATE TABLE IF NOT EXISTS oid_data (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        oid VARCHAR(255) NOT NULL,
+        oid_type VARCHAR(255) NOT NULL
+    );
+    """
+    execute_query(connection, create_table_query)
+
+# Execute query
+def execute_query(connection, query):
+    cursor = connection.cursor()
+    try:
+        cursor.execute(query)
+        connection.commit()
+        print("Query executed successfully")
+    except Exception as e:
+        print(f"The error '{e}' occurred")
+
+# Function to insert OID and its type into the database
+def insert_oid_data(connection, oid, oid_type):
+    insert_query = f"""
+    INSERT INTO oid_data (oid, oid_type)
+    VALUES ('{oid}', '{oid_type}');
+    """
+    execute_query(connection, insert_query)
+
+# Connect to MySQL database
+connection = create_connection("localhost", "root", "root", "mib_database")
+create_table(connection)
+
+# Get all MIB symbols
 mibSymbols = mibBuilder.mibSymbols
 for modName, modSymbols in mibSymbols.items():
-    #   if modName == "IF-MIB":  # Filter for IF-MIB symbols only
-        logging.info(f'MIB Module: {modName}')
-        for symName, sym in modSymbols.items():
-            # Access other attributes as needed
-            if hasattr(sym, 'name'):
-                oid = sym.getName()
-                print(f"OID: {'.'.join(map(str, oid))}")
-            
-            # if hasattr(sym,'getLabel')and callable(sym.getLabel):
-            #     try:
-            #         label=sym.getLabel()
-            #         print(f"Device Name: {sym.getLabel()}")
-            #     except Exception as e:
-            #          print("Error getting Device name.")
+    logging.info(f'MIB Module: {modName}')
+    for symName, sym in modSymbols.items():
+        if hasattr(sym, 'name'):
+            oid = sym.getName()
+            oid_str = '.'.join(map(str, oid))
+            # print(f"OID: {oid_str}")
 
             if hasattr(sym, 'getSyntax') and callable(getattr(sym, 'getSyntax', None)):
                 try:
                     syntax = sym.getSyntax()
-                    # list=[]
-                    # list.append(syntax)
-                    # print(list)
-                    print(f"Type of OID: {syntax.__class__.__name__}")
+                    oid_type = syntax.__class__.__name__
+                    # print(f"Type of OID: {oid_type}")
+                    
+                    # Insert into MySQL database
+                    insert_oid_data(connection, oid_str, oid_type)
                 except Exception as e:
                     print(f"Error getting OID type: {e}")
 
-
-            # if hasattr(sym, 'getDescription') and callable(sym.getDescription):
-            #     try:
-            #         description = sym.getDescription()
-            #         print(f"Description: {description}")
-            #     except Exception as e:
-            #         print(f"Error getting description for: {e}")
-            # else:
-            #     print(f"does not have a valid getDescription method.")
-                
+# Close the MySQL connection
+if connection:
+    connection.close()
+    print("The connection is closed.")
