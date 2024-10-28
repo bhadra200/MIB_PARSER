@@ -1,3 +1,6 @@
+# This code retrieves the oid number,device name and the description from a mib file given.
+
+
 import logging
 from pysnmp.smi import builder, view
 from pysmi.reader.localfile import FileReader
